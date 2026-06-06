@@ -23,10 +23,28 @@ class NotificationSender:
         low_count = len(manager_anomalies[manager_anomalies['严重程度'] == '低'])
         total = len(manager_anomalies)
         
+        if '问题来源' in manager_anomalies.columns:
+            new_count = len(manager_anomalies[manager_anomalies['问题来源'] == '新增问题'])
+            history_count = len(manager_anomalies[manager_anomalies['问题来源'] == '历史未关闭'])
+            recurrence_count = len(manager_anomalies[manager_anomalies['问题来源'] == '复发问题'])
+        else:
+            new_count = total
+            history_count = 0
+            recurrence_count = 0
+        
         parkings = manager_anomalies['车场名称'].unique()
         anomaly_types = manager_anomalies['异常类型'].unique()
         
-        subject = f"【智慧停车运营月报】{stat_month.strftime('%Y年%m月')} 待处理异常提醒 - {manager}"
+        subject_parts = []
+        if new_count > 0:
+            subject_parts.append(f"新增{new_count}项")
+        if history_count > 0:
+            subject_parts.append(f"未关闭{history_count}项")
+        if recurrence_count > 0:
+            subject_parts.append(f"复发{recurrence_count}项")
+        subject_tag = ', '.join(subject_parts) if subject_parts else f"共{total}项"
+        
+        subject = f"【智慧停车运营月报】{stat_month.strftime('%Y年%m月')} ({subject_tag}) - {manager}"
         
         body = f"""尊敬的 {manager} 您好：
 
@@ -40,6 +58,10 @@ class NotificationSender:
   🟡 中优先级: {mid_count} 项
   🟢 低优先级: {low_count} 项
 
+  🆕 新增问题: {new_count} 项
+  ⏳ 历史未关闭: {history_count} 项
+  🔁 复发问题: {recurrence_count} 项
+
 🏢 涉及车场: {', '.join(parkings)}
 📋 问题类型: {', '.join(anomaly_types)}
 
@@ -50,13 +72,34 @@ class NotificationSender:
         
         for idx, (_, row) in enumerate(manager_anomalies.iterrows(), 1):
             priority_icon = '🔴' if row['严重程度'] == '高' else '🟡' if row['严重程度'] == '中' else '🟢'
-            body += f"\n{priority_icon} [{idx}] {row['异常类型']}\n"
+            
+            source_tag = ''
+            if '问题来源' in row and pd.notna(row['问题来源']):
+                source = row['问题来源']
+                if source == '新增问题':
+                    source_tag = ' 🆕'
+                elif source == '历史未关闭':
+                    source_tag = ' ⏳'
+                elif source == '复发问题':
+                    source_tag = ' 🔁'
+            
+            recurrence_tag = ''
+            if '重复出现次数' in row and pd.notna(row['重复出现次数']) and int(row['重复出现次数']) > 1:
+                recurrence_tag = f" (重复{int(row['重复出现次数'])}次)"
+            
+            first_found_tag = ''
+            if '首次发现月份' in row and pd.notna(row['首次发现月份']):
+                first_found_tag = f" [首次发现:{row['首次发现月份']}]"
+            
+            body += f"\n{priority_icon} [{idx}] {row['异常类型']}{source_tag}{recurrence_tag}{first_found_tag}\n"
             body += f"    车场: {row['车场名称']}\n"
             body += f"    描述: {row['异常描述']}\n"
             if '异常详情' in row and pd.notna(row['异常详情']) and str(row['异常详情']).strip():
                 body += f"    详情: {row['异常详情']}\n"
             if '异常日期' in row and pd.notna(row['异常日期']):
                 body += f"    日期: {row['异常日期']}\n"
+            if '问题ID' in row and pd.notna(row['问题ID']):
+                body += f"    问题ID: {row['问题ID']}\n"
             body += "    ─────────────────────────────\n"
         
         body += f"""
@@ -66,6 +109,7 @@ class NotificationSender:
   • 高优先级问题请在 3 个工作日内处理
   • 中优先级问题请在 7 个工作日内处理
   • 处理完成后请在系统中更新状态
+  • 🔁标记为复发的问题请重点关注根因分析
 
 如有疑问请联系运营管理部门。
 
@@ -205,7 +249,14 @@ class NotificationSender:
         
         if anomalies_df is None or anomalies_df.empty:
             print("  ℹ 没有待发送的异常事项")
-            return pd.DataFrame(), pd.DataFrame()
+            empty_send = pd.DataFrame()
+            review_df = self._generate_review_summary(
+                anomalies_df if anomalies_df is not None else pd.DataFrame(),
+                pd.DataFrame(), 
+                target_managers,
+                stat_month
+            )
+            return empty_send, review_df
         
         manager_groups = self._group_by_manager(anomalies_df)
         
@@ -231,7 +282,7 @@ class NotificationSender:
                     '统计月份': rec['统计月份']
                 })
             preview_records_df = pd.DataFrame(preview_for_review)
-            return pd.DataFrame(self.preview_records), self._generate_review_summary(anomalies_df, preview_records_df, target_managers)
+            return pd.DataFrame(self.preview_records), self._generate_review_summary(anomalies_df, preview_records_df, target_managers, stat_month)
         
         success_count = 0
         fail_count = 0
@@ -309,12 +360,13 @@ class NotificationSender:
         print(f"\n发送完成: 成功 {success_count} 条，失败 {fail_count} 条，待分配 {skip_count} 条")
         
         send_records_df = pd.DataFrame(self.send_records)
-        review_df = self._generate_review_summary(anomalies_df, send_records_df, target_managers)
+        review_df = self._generate_review_summary(anomalies_df, send_records_df, target_managers, stat_month)
         
         return send_records_df, review_df
 
-    def _generate_review_summary(self, anomalies_df, send_records_df, target_managers=None):
+    def _generate_review_summary(self, anomalies_df, send_records_df, target_managers=None, stat_month=None):
         all_managers = set()
+        stat_month_str = stat_month.strftime('%Y-%m') if stat_month else ''
         
         if anomalies_df is not None and not anomalies_df.empty:
             df = anomalies_df.copy()
@@ -323,62 +375,62 @@ class NotificationSender:
         
         review_data = []
         
-        for manager in sorted(all_managers):
-            manager_anomalies = anomalies_df[anomalies_df['负责人'].apply(self._normalize_manager) == manager]
-            expected = len(manager_anomalies)
-            
-            if not send_records_df.empty:
-                record = send_records_df[send_records_df['负责人'] == manager]
-                if not record.empty:
-                    actual_sent = record['问题数量'].iloc[0]
-                    status = record['发送状态'].iloc[0]
-                    fail_reason = record['失败原因'].iloc[0] if '失败原因' in record.columns else ''
-                    batch_id = record['批次ID'].iloc[0]
-                    send_time = record['发送时间'].iloc[0]
-                else:
-                    actual_sent = 0
-                    status = '未发送'
-                    fail_reason = '本次运行未执行发送'
-                    batch_id = self.batch_id
-                    send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                actual_sent = 0
-                status = '未发送'
-                fail_reason = '本月未执行发送操作'
-                batch_id = self.batch_id
-                send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            if target_managers and manager not in target_managers:
-                send_scope = '范围外'
-            else:
-                send_scope = '目标范围'
-            
-            review_data.append({
-                '批次ID': batch_id,
-                '统计月份': anomalies_df['统计月份'].iloc[0] if '统计月份' in anomalies_df.columns and not anomalies_df.empty else '',
-                '负责人': manager,
-                '应发问题数': expected,
-                '实际发送数': actual_sent,
-                '是否未发送问题': '是' if expected > actual_sent else '否',
-                '发送状态': status,
-                '发送范围': send_scope,
-                '失败原因': fail_reason,
-                '发送时间': send_time
-            })
-        
-        if not review_data:
+        if not all_managers:
             review_data.append({
                 '批次ID': self.batch_id,
-                '统计月份': '',
-                '负责人': '',
+                '统计月份': stat_month_str,
+                '负责人': '无',
                 '应发问题数': 0,
                 '实际发送数': 0,
                 '是否未发送问题': '否',
                 '发送状态': '无异常',
-                '发送范围': '',
-                '失败原因': '本月无待处理异常',
+                '发送范围': '全部',
+                '失败原因': '本月无待处理异常，无需发送',
                 '发送时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
+        else:
+            for manager in sorted(all_managers):
+                manager_anomalies = anomalies_df[anomalies_df['负责人'].apply(self._normalize_manager) == manager]
+                expected = len(manager_anomalies)
+                
+                if not send_records_df.empty:
+                    record = send_records_df[send_records_df['负责人'] == manager]
+                    if not record.empty:
+                        actual_sent = record['问题数量'].iloc[0]
+                        status = record['发送状态'].iloc[0]
+                        fail_reason = record['失败原因'].iloc[0] if '失败原因' in record.columns else ''
+                        batch_id = record['批次ID'].iloc[0]
+                        send_time = record['发送时间'].iloc[0]
+                    else:
+                        actual_sent = 0
+                        status = '未发送'
+                        fail_reason = '本次运行未执行发送'
+                        batch_id = self.batch_id
+                        send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    actual_sent = 0
+                    status = '未发送'
+                    fail_reason = '本月未执行发送操作'
+                    batch_id = self.batch_id
+                    send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                if target_managers and manager not in target_managers:
+                    send_scope = '范围外'
+                else:
+                    send_scope = '目标范围'
+                
+                review_data.append({
+                    '批次ID': batch_id,
+                    '统计月份': stat_month_str,
+                    '负责人': manager,
+                    '应发问题数': expected,
+                    '实际发送数': actual_sent,
+                    '是否未发送问题': '是' if expected > actual_sent else '否',
+                    '发送状态': status,
+                    '发送范围': send_scope,
+                    '失败原因': fail_reason,
+                    '发送时间': send_time
+                })
         
         return pd.DataFrame(review_data)
 

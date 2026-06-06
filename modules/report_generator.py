@@ -126,6 +126,17 @@ class ReportGenerator:
             '消息主题', '消息内容', '统计月份'
         ])
     
+    def _get_empty_closed_loop_df(self):
+        return pd.DataFrame(columns=[
+            '负责人', '本月新增问题数', '历史未关闭数', '本月已关闭数',
+            '超期未处理数', '复发问题数', '问题总数', '本月闭环率(%)'
+        ])
+    
+    def _get_empty_feedback_error_df(self):
+        return pd.DataFrame(columns=[
+            '问题ID', '处理状态', '处理人', '处理时间', '备注', '错误原因'
+        ])
+    
     def _normalize_manager(self, manager):
         if pd.isna(manager) or str(manager).strip() == '' or manager == 'nan':
             return '待分配'
@@ -137,17 +148,25 @@ class ReportGenerator:
         
         todo_list = anomalies_df.copy()
         todo_list['负责人'] = todo_list['负责人'].apply(self._normalize_manager)
-        todo_list['处理状态'] = '待处理'
+        
+        if '处理状态' not in todo_list.columns:
+            todo_list['处理状态'] = '待处理'
+        else:
+            todo_list['处理状态'] = todo_list['处理状态'].fillna('待处理')
+        
         todo_list['优先级'] = todo_list['严重程度'].map({'高': 'P0', '中': 'P1', '低': 'P2'})
-        todo_list['截止日期'] = (datetime.now() + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
+        
+        if '截止日期' not in todo_list.columns:
+            todo_list['截止日期'] = (datetime.now() + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
         
         manager_todos = todo_list.groupby('负责人').agg({
             '异常类型': ['count', lambda x: ', '.join(x.unique())],
             '车场名称': lambda x: ', '.join(x.unique()),
-            '严重程度': lambda x: ', '.join(x.unique())
+            '严重程度': lambda x: ', '.join(x.unique()),
+            '处理状态': lambda x: ', '.join(x.unique())
         }).reset_index()
-        manager_todos.columns = ['负责人', '问题数量', '待处理问题类型', '涉及车场', '严重程度']
-        manager_todos = manager_todos[['负责人', '待处理问题类型', '涉及车场', '严重程度', '问题数量']]
+        manager_todos.columns = ['负责人', '问题数量', '待处理问题类型', '涉及车场', '严重程度', '处理状态汇总']
+        manager_todos = manager_todos[['负责人', '待处理问题类型', '涉及车场', '严重程度', '处理状态汇总', '问题数量']]
         
         return todo_list, manager_todos
 
@@ -198,6 +217,13 @@ class ReportGenerator:
             
             review_df = results.get('notification_review', self._get_empty_notification_review_df())
             review_df.to_excel(writer, sheet_name='通知复盘', index=False)
+            
+            closed_loop_df = results.get('closed_loop_summary', self._get_empty_closed_loop_df())
+            closed_loop_df.to_excel(writer, sheet_name='闭环复盘', index=False)
+            
+            feedback_error_df = results.get('feedback_errors', self._get_empty_feedback_error_df())
+            if not feedback_error_df.empty:
+                feedback_error_df.to_excel(writer, sheet_name='反馈异常', index=False)
             
             if 'send_records' in results and not results['send_records'].empty:
                 results['send_records'].to_excel(writer, sheet_name='发送记录', index=False)
