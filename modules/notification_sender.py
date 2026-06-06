@@ -1,5 +1,4 @@
 import os
-import json
 import pandas as pd
 from datetime import datetime
 from utils.common import load_config, ensure_dir
@@ -14,7 +13,9 @@ class NotificationSender:
         ))
         self.notification_config = self.config.get('notification', {})
         self.send_records = []
+        self.preview_records = []
         self.batch_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.send_mode = 'none'
 
     def generate_message_content(self, manager, manager_anomalies, stat_month):
         high_count = len(manager_anomalies[manager_anomalies['严重程度'] == '高'])
@@ -52,7 +53,7 @@ class NotificationSender:
             body += f"\n{priority_icon} [{idx}] {row['异常类型']}\n"
             body += f"    车场: {row['车场名称']}\n"
             body += f"    描述: {row['异常描述']}\n"
-            if '异常详情' in row and pd.notna(row['异常详情']):
+            if '异常详情' in row and pd.notna(row['异常详情']) and str(row['异常详情']).strip():
                 body += f"    详情: {row['异常详情']}\n"
             if '异常日期' in row and pd.notna(row['异常日期']):
                 body += f"    日期: {row['异常日期']}\n"
@@ -70,48 +71,75 @@ class NotificationSender:
 
 --
 智慧停车月度运营自动化工具
-发送时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
         
         return subject, body
 
-    def preview_messages(self, manager_todos, anomalies_df, stat_month):
+    def _normalize_manager(self, manager):
+        if pd.isna(manager) or str(manager).strip() == '' or manager == 'nan':
+            return '待分配'
+        return str(manager).strip()
+
+    def _group_by_manager(self, anomalies_df):
+        if anomalies_df is None or anomalies_df.empty:
+            return {}
+        
+        df = anomalies_df.copy()
+        df['负责人'] = df['负责人'].apply(self._normalize_manager)
+        
+        manager_groups = {}
+        for manager, group in df.groupby('负责人'):
+            manager_groups[manager] = group
+        
+        return manager_groups
+
+    def preview_messages(self, manager_todos, anomalies_df, stat_month, target_managers=None):
         print("\n" + "="*60)
         print("                 📧 消息预览模式")
         print("="*60)
         print(f"\n统计月份: {stat_month.strftime('%Y年%m月')}")
         print(f"发送批次: {self.batch_id}")
-        print(f"待发送: {len(manager_todos)} 位负责人\n")
+        
+        manager_groups = self._group_by_manager(anomalies_df)
+        
+        if target_managers:
+            filtered = {k: v for k, v in manager_groups.items() if k in target_managers}
+            manager_groups = filtered
+            print(f"指定发送: {', '.join(target_managers)}")
+        
+        print(f"待发送: {len(manager_groups)} 位负责人\n")
         
         previews = []
-        for _, manager_row in manager_todos.iterrows():
-            manager = manager_row['负责人']
-            if manager == '待分配':
-                continue
-            
-            manager_anomalies = anomalies_df[anomalies_df['负责人'] == manager]
+        for manager, manager_anomalies in manager_groups.items():
             subject, body = self.generate_message_content(manager, manager_anomalies, stat_month)
             
-            previews.append({
+            preview_record = {
+                '批次ID': self.batch_id,
+                '生成时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                '发送模式': 'preview',
                 '负责人': manager,
                 '问题数量': len(manager_anomalies),
-                '主题': subject,
-                '内容': body
-            })
+                '消息主题': subject,
+                '消息内容': body,
+                '统计月份': stat_month.strftime('%Y-%m')
+            }
+            previews.append(preview_record)
+            self.preview_records.append(preview_record)
             
             print(f"{'─'*60}")
             print(f"👤 负责人: {manager}")
             print(f"📋 问题数: {len(manager_anomalies)}")
             print(f"📧 主题: {subject}")
             print(f"\n{'-'*60}")
-            print(body[:500] + "..." if len(body) > 500 else body)
+            print(body[:600] + "..." if len(body) > 600 else body)
             print(f"\n")
         
         print(f"{'='*60}")
         print(f"预览完成，共 {len(previews)} 条消息")
         print(f"{'='*60}\n")
         
-        return previews
+        return pd.DataFrame(previews)
 
     def _send_email(self, to_email, subject, body):
         try:
@@ -161,41 +189,70 @@ class NotificationSender:
                 return True, "发送成功"
             else:
                 return False, f"HTTP {response.status_code}: {response.text}"
+        except ImportError:
+            return False, "未安装requests库"
         except Exception as e:
             return False, str(e)
 
     def _simulate_send(self, manager, subject, body):
-        return True, "模拟发送成功（配置中禁用真实发送）"
+        return True, "模拟发送成功"
 
-    def send_notifications(self, manager_todos, anomalies_df, stat_month, send_mode='preview'):
+    def send_notifications(self, manager_todos, anomalies_df, stat_month, 
+                          send_mode='preview', target_managers=None):
         print(f"\n开始发送负责人待办通知 (模式: {send_mode})...")
         self.send_records = []
+        self.send_mode = send_mode
         
         if anomalies_df is None or anomalies_df.empty:
             print("  ℹ 没有待发送的异常事项")
-            return pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame()
+        
+        manager_groups = self._group_by_manager(anomalies_df)
+        
+        if target_managers:
+            filtered = {k: v for k, v in manager_groups.items() if k in target_managers}
+            skipped = len(manager_groups) - len(filtered)
+            manager_groups = filtered
+            print(f"  指定发送: {', '.join(target_managers)} (跳过 {skipped} 位)")
         
         if send_mode == 'preview':
-            return self.preview_messages(manager_todos, anomalies_df, stat_month)
+            preview_df = self.preview_messages(manager_todos, anomalies_df, stat_month, target_managers)
+            preview_for_review = []
+            for rec in self.preview_records:
+                preview_for_review.append({
+                    '批次ID': rec['批次ID'],
+                    '发送时间': rec['生成时间'],
+                    '发送模式': 'preview',
+                    '负责人': rec['负责人'],
+                    '问题数量': rec['问题数量'],
+                    '发送状态': '已预览',
+                    '失败原因': '',
+                    '耗时(秒)': 0,
+                    '统计月份': rec['统计月份']
+                })
+            preview_records_df = pd.DataFrame(preview_for_review)
+            return pd.DataFrame(self.preview_records), self._generate_review_summary(anomalies_df, preview_records_df, target_managers)
         
         success_count = 0
         fail_count = 0
+        skip_count = 0
         
-        for _, manager_row in manager_todos.iterrows():
-            manager = manager_row['负责人']
+        for manager, manager_anomalies in manager_groups.items():
             if manager == '待分配':
                 self.send_records.append({
                     '批次ID': self.batch_id,
                     '发送时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    '发送模式': send_mode,
                     '负责人': manager,
-                    '问题数量': 0,
-                    '发送状态': '跳过',
-                    '失败原因': '未分配负责人',
+                    '问题数量': len(manager_anomalies),
+                    '发送状态': '待分配',
+                    '失败原因': '未分配负责人，需手动处理',
+                    '耗时(秒)': 0,
                     '统计月份': stat_month.strftime('%Y-%m')
                 })
+                skip_count += 1
                 continue
             
-            manager_anomalies = anomalies_df[anomalies_df['负责人'] == manager]
             subject, body = self.generate_message_content(manager, manager_anomalies, stat_month)
             
             start_time = datetime.now()
@@ -232,6 +289,7 @@ class NotificationSender:
             self.send_records.append({
                 '批次ID': self.batch_id,
                 '发送时间': end_time.strftime('%Y-%m-%d %H:%M:%S'),
+                '发送模式': send_mode,
                 '负责人': manager,
                 '问题数量': len(manager_anomalies),
                 '发送状态': status,
@@ -245,14 +303,100 @@ class NotificationSender:
             if not success:
                 print(f"     原因: {message}")
         
-        print(f"\n发送完成: 成功 {success_count} 条，失败 {fail_count} 条")
-        return pd.DataFrame(self.send_records)
+        if skip_count > 0:
+            print(f"  ⏭  跳过待分配负责人: {skip_count} 位")
+        
+        print(f"\n发送完成: 成功 {success_count} 条，失败 {fail_count} 条，待分配 {skip_count} 条")
+        
+        send_records_df = pd.DataFrame(self.send_records)
+        review_df = self._generate_review_summary(anomalies_df, send_records_df, target_managers)
+        
+        return send_records_df, review_df
+
+    def _generate_review_summary(self, anomalies_df, send_records_df, target_managers=None):
+        all_managers = set()
+        
+        if anomalies_df is not None and not anomalies_df.empty:
+            df = anomalies_df.copy()
+            df['负责人'] = df['负责人'].apply(self._normalize_manager)
+            all_managers = set(df['负责人'].unique())
+        
+        review_data = []
+        
+        for manager in sorted(all_managers):
+            manager_anomalies = anomalies_df[anomalies_df['负责人'].apply(self._normalize_manager) == manager]
+            expected = len(manager_anomalies)
+            
+            if not send_records_df.empty:
+                record = send_records_df[send_records_df['负责人'] == manager]
+                if not record.empty:
+                    actual_sent = record['问题数量'].iloc[0]
+                    status = record['发送状态'].iloc[0]
+                    fail_reason = record['失败原因'].iloc[0] if '失败原因' in record.columns else ''
+                    batch_id = record['批次ID'].iloc[0]
+                    send_time = record['发送时间'].iloc[0]
+                else:
+                    actual_sent = 0
+                    status = '未发送'
+                    fail_reason = '本次运行未执行发送'
+                    batch_id = self.batch_id
+                    send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                actual_sent = 0
+                status = '未发送'
+                fail_reason = '本月未执行发送操作'
+                batch_id = self.batch_id
+                send_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            if target_managers and manager not in target_managers:
+                send_scope = '范围外'
+            else:
+                send_scope = '目标范围'
+            
+            review_data.append({
+                '批次ID': batch_id,
+                '统计月份': anomalies_df['统计月份'].iloc[0] if '统计月份' in anomalies_df.columns and not anomalies_df.empty else '',
+                '负责人': manager,
+                '应发问题数': expected,
+                '实际发送数': actual_sent,
+                '是否未发送问题': '是' if expected > actual_sent else '否',
+                '发送状态': status,
+                '发送范围': send_scope,
+                '失败原因': fail_reason,
+                '发送时间': send_time
+            })
+        
+        if not review_data:
+            review_data.append({
+                '批次ID': self.batch_id,
+                '统计月份': '',
+                '负责人': '',
+                '应发问题数': 0,
+                '实际发送数': 0,
+                '是否未发送问题': '否',
+                '发送状态': '无异常',
+                '发送范围': '',
+                '失败原因': '本月无待处理异常',
+                '发送时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+        
+        return pd.DataFrame(review_data)
 
     def save_send_records(self, stat_month):
-        if not self.send_records:
-            return None
+        all_records = []
         
-        records_df = pd.DataFrame(self.send_records)
+        if self.send_records:
+            all_records.extend(self.send_records)
+        if self.preview_records:
+            for rec in self.preview_records:
+                rec['发送状态'] = '已预览'
+                rec['耗时(秒)'] = 0
+                all_records.append(rec)
+        
+        if not all_records:
+            return None, None
+        
+        records_df = pd.DataFrame(all_records)
         
         record_dir = ensure_dir(os.path.join(
             self.history_dir,
@@ -260,7 +404,7 @@ class NotificationSender:
         ))
         record_path = os.path.join(
             record_dir,
-            f"发送记录_{self.batch_id}.csv"
+            f"发送记录_{self.batch_id}_{self.send_mode}.csv"
         )
         records_df.to_csv(record_path, index=False, encoding='utf-8-sig')
         print(f"  ✓ 发送记录已保存: {record_path}")
@@ -273,4 +417,7 @@ class NotificationSender:
             combined = records_df
         combined.to_csv(all_records_path, index=False, encoding='utf-8-sig')
         
-        return records_df
+        return records_df, record_path
+
+    def get_preview_records(self):
+        return pd.DataFrame(self.preview_records) if self.preview_records else pd.DataFrame()

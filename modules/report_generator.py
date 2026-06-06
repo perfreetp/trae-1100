@@ -114,26 +114,39 @@ class ReportGenerator:
             '负责人', '待处理问题类型', '涉及车场', '严重程度', '问题数量'
         ])
     
+    def _get_empty_notification_review_df(self):
+        return pd.DataFrame(columns=[
+            '批次ID', '统计月份', '负责人', '应发问题数', '实际发送数',
+            '是否未发送问题', '发送状态', '发送范围', '失败原因', '发送时间'
+        ])
+    
+    def _get_empty_preview_record_df(self):
+        return pd.DataFrame(columns=[
+            '批次ID', '生成时间', '发送模式', '负责人', '问题数量',
+            '消息主题', '消息内容', '统计月份'
+        ])
+    
+    def _normalize_manager(self, manager):
+        if pd.isna(manager) or str(manager).strip() == '' or manager == 'nan':
+            return '待分配'
+        return str(manager).strip()
+    
     def generate_issue_list(self, anomalies_df):
         if anomalies_df is None or anomalies_df.empty:
             return self._get_empty_todo_df(), self._get_empty_manager_todo_df()
         
         todo_list = anomalies_df.copy()
+        todo_list['负责人'] = todo_list['负责人'].apply(self._normalize_manager)
         todo_list['处理状态'] = '待处理'
         todo_list['优先级'] = todo_list['严重程度'].map({'高': 'P0', '中': 'P1', '低': 'P2'})
         todo_list['截止日期'] = (datetime.now() + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
         
         manager_todos = todo_list.groupby('负责人').agg({
-            '异常类型': lambda x: ', '.join(x.unique()),
+            '异常类型': ['count', lambda x: ', '.join(x.unique())],
             '车场名称': lambda x: ', '.join(x.unique()),
-            '严重程度': lambda x: ', '.join(x.unique()),
-            '异常类型': 'count'
+            '严重程度': lambda x: ', '.join(x.unique())
         }).reset_index()
-        manager_todos.columns = ['负责人', '问题数量', '涉及车场', '严重程度']
-        manager_todos['待处理问题类型'] = todo_list.groupby('负责人')['异常类型'].apply(
-            lambda x: ', '.join(x.unique())
-        ).values
-        
+        manager_todos.columns = ['负责人', '问题数量', '待处理问题类型', '涉及车场', '严重程度']
         manager_todos = manager_todos[['负责人', '待处理问题类型', '涉及车场', '严重程度', '问题数量']]
         
         return todo_list, manager_todos
@@ -183,8 +196,14 @@ class ReportGenerator:
             manager_todos = results.get('manager_todos', self._get_empty_manager_todo_df())
             manager_todos.to_excel(writer, sheet_name='负责人待办', index=False)
             
+            review_df = results.get('notification_review', self._get_empty_notification_review_df())
+            review_df.to_excel(writer, sheet_name='通知复盘', index=False)
+            
             if 'send_records' in results and not results['send_records'].empty:
                 results['send_records'].to_excel(writer, sheet_name='发送记录', index=False)
+            
+            if 'preview_records' in results and not results['preview_records'].empty:
+                results['preview_records'].to_excel(writer, sheet_name='消息预览', index=False)
 
     def save_history_version(self, output_path, stat_month):
         version_dir = ensure_dir(os.path.join(

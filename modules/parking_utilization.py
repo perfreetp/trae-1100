@@ -17,12 +17,17 @@ class ParkingUtilization:
             total_spots = df['total_spots'].iloc[0] if 'total_spots' in df.columns else None
             parking_type = df['parking_type'].iloc[0] if 'parking_type' in df.columns else '未知'
             
+            manager = df['manager'].iloc[0] if 'manager' in df.columns else '待分配'
+            
             if total_spots is None:
                 self.data_issues.append({
                     '车场名称': parking_name,
-                    '问题类型': '缺少字段',
-                    '问题描述': '缺少"车位数量"字段，无法计算车位利用率',
-                    '严重程度': '中'
+                    '异常类型': '缺少字段',
+                    '异常描述': '缺少"车位数量"字段，无法计算车位利用率',
+                    '异常详情': '',
+                    '严重程度': '中',
+                    '负责人': manager,
+                    '异常日期': ''
                 })
                 total_spots = 0
             
@@ -33,17 +38,23 @@ class ParkingUtilization:
             if not has_duration:
                 self.data_issues.append({
                     '车场名称': parking_name,
-                    '问题类型': '缺少字段',
-                    '问题描述': '缺少"停车时长"字段，无法计算停车时长指标',
-                    '严重程度': '高'
+                    '异常类型': '缺少字段',
+                    '异常描述': '缺少"停车时长"字段，无法计算停车时长指标',
+                    '异常详情': '',
+                    '严重程度': '高',
+                    '负责人': manager,
+                    '异常日期': ''
                 })
             
             if not has_visits:
                 self.data_issues.append({
                     '车场名称': parking_name,
-                    '问题类型': '缺少字段',
-                    '问题描述': '缺少"总车次"字段，无法准确计算总停车时长',
-                    '严重程度': '中'
+                    '异常类型': '缺少字段',
+                    '异常描述': '缺少"总车次"字段，无法准确计算总停车时长',
+                    '异常详情': '',
+                    '严重程度': '中',
+                    '负责人': manager,
+                    '异常日期': ''
                 })
             
             total_duration = 0
@@ -155,11 +166,15 @@ class ParkingUtilization:
                 if not has_exit:
                     missing_fields.append('出场时间(exit_time)')
                 
+                manager = df['manager'].iloc[0] if 'manager' in df.columns else '待分配'
                 peak_issues.append({
                     '车场名称': parking_name,
-                    '问题类型': '缺少字段',
-                    '问题描述': f"缺少{', '.join(missing_fields)}，无法计算高峰占用率",
-                    '严重程度': '中'
+                    '异常类型': '缺少字段',
+                    '异常描述': f"缺少{', '.join(missing_fields)}，无法计算高峰占用率",
+                    '异常详情': '',
+                    '严重程度': '中',
+                    '负责人': manager,
+                    '异常日期': ''
                 })
                 
                 morning_occupancy = None
