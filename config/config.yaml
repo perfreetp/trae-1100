@@ -1,0 +1,30 @@
+
+system:
+  name: "智慧停车月度运营自动化工具"
+  version: "1.0.0"
+  
+paths:
+  input_dir: "./data/input"
+  output_dir: "./data/output"
+  history_dir: "./data/history"
+  template_dir: "./templates"
+  
+validation:
+  revenue_drop_threshold: 0.3
+  free_pass_threshold: 0.1
+  missing_date_warning: true
+  
+parking_types:
+  - "直营"
+  - "委托"
+  
+analysis:
+  peak_hours:
+    morning: ["07:00", "09:00"]
+    evening: ["17:00", "19:00"]
+  
+report:
+  generate_charts: true
+  generate_excel: true
+  send_notification: false
+  keep_versions: 12
