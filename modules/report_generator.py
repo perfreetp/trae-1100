@@ -96,9 +96,27 @@ class ReportGenerator:
         print(f"  ✓ 生成 {len(charts)} 张图表")
         return charts
 
+    def _get_empty_anomaly_df(self):
+        return pd.DataFrame(columns=[
+            '车场名称', '异常类型', '异常描述', '异常详情', 
+            '严重程度', '负责人', '异常日期'
+        ])
+    
+    def _get_empty_todo_df(self):
+        return pd.DataFrame(columns=[
+            '车场名称', '异常类型', '异常描述', '异常详情',
+            '严重程度', '负责人', '异常日期', '处理状态',
+            '优先级', '截止日期'
+        ])
+    
+    def _get_empty_manager_todo_df(self):
+        return pd.DataFrame(columns=[
+            '负责人', '待处理问题类型', '涉及车场', '严重程度', '问题数量'
+        ])
+    
     def generate_issue_list(self, anomalies_df):
         if anomalies_df is None or anomalies_df.empty:
-            return pd.DataFrame(), pd.DataFrame()
+            return self._get_empty_todo_df(), self._get_empty_manager_todo_df()
         
         todo_list = anomalies_df.copy()
         todo_list['处理状态'] = '待处理'
@@ -108,9 +126,15 @@ class ReportGenerator:
         manager_todos = todo_list.groupby('负责人').agg({
             '异常类型': lambda x: ', '.join(x.unique()),
             '车场名称': lambda x: ', '.join(x.unique()),
-            '严重程度': lambda x: ', '.join(x.unique())
+            '严重程度': lambda x: ', '.join(x.unique()),
+            '异常类型': 'count'
         }).reset_index()
-        manager_todos.columns = ['负责人', '待处理问题类型', '涉及车场', '严重程度']
+        manager_todos.columns = ['负责人', '问题数量', '涉及车场', '严重程度']
+        manager_todos['待处理问题类型'] = todo_list.groupby('负责人')['异常类型'].apply(
+            lambda x: ', '.join(x.unique())
+        ).values
+        
+        manager_todos = manager_todos[['负责人', '待处理问题类型', '涉及车场', '严重程度', '问题数量']]
         
         return todo_list, manager_todos
 
@@ -150,14 +174,17 @@ class ReportGenerator:
             if 'member_summary' in results:
                 results['member_summary'].to_excel(writer, sheet_name='会员分析', index=False)
             
-            if 'anomalies' in results and not results['anomalies'].empty:
-                results['anomalies'].to_excel(writer, sheet_name='异常清单', index=False)
+            anomalies = results.get('anomalies', self._get_empty_anomaly_df())
+            anomalies.to_excel(writer, sheet_name='异常清单', index=False)
             
-            if 'todo_list' in results and not results['todo_list'].empty:
-                results['todo_list'].to_excel(writer, sheet_name='待办事项', index=False)
+            todo_list = results.get('todo_list', self._get_empty_todo_df())
+            todo_list.to_excel(writer, sheet_name='待办事项', index=False)
             
-            if 'manager_todos' in results and not results['manager_todos'].empty:
-                results['manager_todos'].to_excel(writer, sheet_name='负责人待办', index=False)
+            manager_todos = results.get('manager_todos', self._get_empty_manager_todo_df())
+            manager_todos.to_excel(writer, sheet_name='负责人待办', index=False)
+            
+            if 'send_records' in results and not results['send_records'].empty:
+                results['send_records'].to_excel(writer, sheet_name='发送记录', index=False)
 
     def save_history_version(self, output_path, stat_month):
         version_dir = ensure_dir(os.path.join(

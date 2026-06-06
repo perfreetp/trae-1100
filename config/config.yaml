@@ -28,3 +28,26 @@ report:
   generate_excel: true
   send_notification: false
   keep_versions: 12
+
+notification:
+  send_type: "simulate"
+  send_mode: "preview"
+  
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    use_tls: true
+    username: "your_email@example.com"
+    password: "your_password"
+    sender: "noreply@parking.com"
+  
+  webhook_url: ""
+  
+  manager_emails:
+    "张三": "zhangsan@example.com"
+    "李四": "lisi@example.com"
+    "王五": "wangwu@example.com"
+    "赵六": "zhaoliu@example.com"
+    "钱七": "qianqi@example.com"
+    "孙八": "sunba@example.com"
+    "周九": "zhoujiu@example.com"
