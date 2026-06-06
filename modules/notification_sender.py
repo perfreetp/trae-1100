@@ -22,7 +22,7 @@ class NotificationSender:
         mid_count = len(manager_anomalies[manager_anomalies['严重程度'] == '中'])
         low_count = len(manager_anomalies[manager_anomalies['严重程度'] == '低'])
         total = len(manager_anomalies)
-        
+
         if '问题来源' in manager_anomalies.columns:
             new_count = len(manager_anomalies[manager_anomalies['问题来源'] == '新增问题'])
             history_count = len(manager_anomalies[manager_anomalies['问题来源'] == '历史未关闭'])
@@ -31,10 +31,16 @@ class NotificationSender:
             new_count = total
             history_count = 0
             recurrence_count = 0
-        
+
+        overdue_count = 0
+        soon_overdue_count = 0
+        if '超期状态' in manager_anomalies.columns:
+            overdue_count = len(manager_anomalies[manager_anomalies['超期状态'] == '已超期'])
+            soon_overdue_count = len(manager_anomalies[manager_anomalies['超期状态'] == '即将超期'])
+
         parkings = manager_anomalies['车场名称'].unique()
         anomaly_types = manager_anomalies['异常类型'].unique()
-        
+
         subject_parts = []
         if new_count > 0:
             subject_parts.append(f"新增{new_count}项")
@@ -42,10 +48,14 @@ class NotificationSender:
             subject_parts.append(f"未关闭{history_count}项")
         if recurrence_count > 0:
             subject_parts.append(f"复发{recurrence_count}项")
+        if overdue_count > 0:
+            subject_parts.append(f"已超期{overdue_count}项")
+        if soon_overdue_count > 0:
+            subject_parts.append(f"即将超期{soon_overdue_count}项")
         subject_tag = ', '.join(subject_parts) if subject_parts else f"共{total}项"
-        
+
         subject = f"【智慧停车运营月报】{stat_month.strftime('%Y年%m月')} ({subject_tag}) - {manager}"
-        
+
         body = f"""尊敬的 {manager} 您好：
 
 您负责的车场在 {stat_month.strftime('%Y年%m月')} 运营检查中发现以下待处理问题：
@@ -61,55 +71,98 @@ class NotificationSender:
   🆕 新增问题: {new_count} 项
   ⏳ 历史未关闭: {history_count} 项
   🔁 复发问题: {recurrence_count} 项
+  ⚠️ 即将超期: {soon_overdue_count} 项
+  ❌ 已超期: {overdue_count} 项
 
 🏢 涉及车场: {', '.join(parkings)}
 📋 问题类型: {', '.join(anomaly_types)}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-📝 异常明细
-━━━━━━━━━━━━━━━━━━━━━━━
 """
-        
-        for idx, (_, row) in enumerate(manager_anomalies.iterrows(), 1):
-            priority_icon = '🔴' if row['严重程度'] == '高' else '🟡' if row['严重程度'] == '中' else '🟢'
-            
-            source_tag = ''
-            if '问题来源' in row and pd.notna(row['问题来源']):
-                source = row['问题来源']
-                if source == '新增问题':
-                    source_tag = ' 🆕'
-                elif source == '历史未关闭':
-                    source_tag = ' ⏳'
-                elif source == '复发问题':
-                    source_tag = ' 🔁'
-            
-            recurrence_tag = ''
-            if '重复出现次数' in row and pd.notna(row['重复出现次数']) and int(row['重复出现次数']) > 1:
-                recurrence_tag = f" (重复{int(row['重复出现次数'])}次)"
-            
-            first_found_tag = ''
-            if '首次发现月份' in row and pd.notna(row['首次发现月份']):
-                first_found_tag = f" [首次发现:{row['首次发现月份']}]"
-            
-            body += f"\n{priority_icon} [{idx}] {row['异常类型']}{source_tag}{recurrence_tag}{first_found_tag}\n"
-            body += f"    车场: {row['车场名称']}\n"
-            body += f"    描述: {row['异常描述']}\n"
-            if '异常详情' in row and pd.notna(row['异常详情']) and str(row['异常详情']).strip():
-                body += f"    详情: {row['异常详情']}\n"
-            if '异常日期' in row and pd.notna(row['异常日期']):
-                body += f"    日期: {row['异常日期']}\n"
-            if '问题ID' in row and pd.notna(row['问题ID']):
-                body += f"    问题ID: {row['问题ID']}\n"
-            body += "    ─────────────────────────────\n"
-        
+
+        groups = []
+        if overdue_count > 0:
+            groups.append(('❌ 已超期问题', '已超期', True))
+        if soon_overdue_count > 0:
+            groups.append(('⚠️ 即将超期问题', '即将超期', True))
+        if new_count > 0:
+            groups.append(('🆕 新增问题', '新增问题', False))
+        if history_count > 0:
+            groups.append(('⏳ 历史未关闭问题', '历史未关闭', False))
+        if recurrence_count > 0:
+            groups.append(('🔁 复发问题', '复发问题', False))
+
+        if not groups:
+            groups.append(('📝 所有问题', None, False))
+
+        for group_name, group_filter, is_overdue_group in groups:
+            if group_filter is None:
+                group_issues = manager_anomalies
+            elif is_overdue_group:
+                group_issues = manager_anomalies[manager_anomalies['超期状态'] == group_filter]
+            else:
+                group_issues = manager_anomalies[manager_anomalies['问题来源'] == group_filter]
+
+            if len(group_issues) == 0:
+                continue
+
+            body += f"\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+            body += f"{group_name}\n"
+            body += f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+            for idx, (_, row) in enumerate(group_issues.iterrows(), 1):
+                priority_icon = '🔴' if row['严重程度'] == '高' else '🟡' if row['严重程度'] == '中' else '🟢'
+
+                source_tag = ''
+                if '问题来源' in row and pd.notna(row['问题来源']):
+                    source = row['问题来源']
+                    if source == '新增问题':
+                        source_tag = ' 🆕'
+                    elif source == '历史未关闭':
+                        source_tag = ' ⏳'
+                    elif source == '复发问题':
+                        source_tag = ' 🔁'
+
+                overdue_tag = ''
+                if '超期状态' in row and pd.notna(row['超期状态']):
+                    os = row['超期状态']
+                    if os == '已超期':
+                        overdue_tag = ' ❌已超期'
+                    elif os == '即将超期':
+                        overdue_tag = ' ⚠️即将超期'
+
+                recurrence_tag = ''
+                if '重复出现次数' in row and pd.notna(row['重复出现次数']) and int(row['重复出现次数']) > 1:
+                    recurrence_tag = f" (重复{int(row['重复出现次数'])}次)"
+
+                first_found_tag = ''
+                if '首次发现月份' in row and pd.notna(row['首次发现月份']):
+                    first_found_tag = f" [首次发现:{row['首次发现月份']}]"
+
+                deadline_tag = ''
+                if '建议处理期限' in row and pd.notna(row['建议处理期限']):
+                    deadline_tag = f" [截止:{row['建议处理期限']}]"
+
+                body += f"\n{priority_icon} [{idx}] {row['异常类型']}{source_tag}{overdue_tag}{recurrence_tag}{first_found_tag}{deadline_tag}\n"
+                body += f"    车场: {row['车场名称']}\n"
+                body += f"    描述: {row['异常描述']}\n"
+                if '异常详情' in row and pd.notna(row['异常详情']) and str(row['异常详情']).strip():
+                    body += f"    详情: {row['异常详情']}\n"
+                if '异常日期' in row and pd.notna(row['异常日期']):
+                    body += f"    日期: {row['异常日期']}\n"
+                if '问题ID' in row and pd.notna(row['问题ID']):
+                    body += f"    问题ID: {row['问题ID']}\n"
+                body += "    ─────────────────────────────\n"
+
         body += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━
 📌 处理要求
 ━━━━━━━━━━━━━━━━━━━━━━━
-  • 高优先级问题请在 3 个工作日内处理
-  • 中优先级问题请在 7 个工作日内处理
-  • 处理完成后请在系统中更新状态
-  • 🔁标记为复发的问题请重点关注根因分析
+  • 🔴 高优先级问题请在 3 个工作日内处理
+  • 🟡 中优先级问题请在 7 个工作日内处理
+  • 🟢 低优先级问题请在 15 个工作日内处理
+  • ❌ 已超期问题请立即处理并说明原因
+  • 🔁 复发问题请重点关注根因分析，避免再次出现
+
+处理完成后请在系统中更新处理状态和备注。
 
 如有疑问请联系运营管理部门。
 
@@ -117,7 +170,7 @@ class NotificationSender:
 智慧停车月度运营自动化工具
 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
-        
+
         return subject, body
 
     def _normalize_manager(self, manager):

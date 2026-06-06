@@ -15,7 +15,7 @@ from modules.issue_tracker import IssueTracker
 
 def print_header():
     print("=" * 60)
-    print("        智慧停车月度运营自动化工具 v1.3")
+    print("        智慧停车月度运营自动化工具 v1.4")
     print("=" * 60)
     print()
 
@@ -25,8 +25,8 @@ def main():
     parser.add_argument('--year', type=int, help='统计年份 (默认: 上个月所属年份)')
     parser.add_argument('--month', type=int, help='统计月份 (默认: 上个月)')
     parser.add_argument('--generate-sample', action='store_true', help='生成示例数据')
-    parser.add_argument('--send-mode', 
-                       choices=['none', 'preview', 'simulate', 'real'], 
+    parser.add_argument('--send-mode',
+                       choices=['none', 'preview', 'simulate', 'real'],
                        default='none',
                        help='发送模式: none(不发送), preview(预览), simulate(模拟发送), real(真实发送)')
     parser.add_argument('--managers', nargs='*', default=None,
@@ -35,6 +35,8 @@ def main():
                        help='只生成闭环复盘，不重新发送通知')
     parser.add_argument('--feedback', type=str, default=None,
                        help='处理反馈文件路径 (Excel/CSV)')
+    parser.add_argument('--export-feedback-template', action='store_true',
+                       help='导出本月异常的处理反馈模板')
     args = parser.parse_args()
 
     print_header()
@@ -49,7 +51,7 @@ def main():
 
     try:
         collector = DataCollector(config)
-        
+
         stat_month = collector.select_month(args.year, args.month)
         print(f"统计月份: {stat_month.strftime('%Y年%m月')}")
         print(f"发送模式: {args.send_mode}")
@@ -58,6 +60,8 @@ def main():
             print(f"指定负责人: {', '.join(args.managers)}")
         if args.feedback:
             print(f"反馈文件: {args.feedback}")
+        if args.export_feedback_template:
+            print(f"导出反馈模板: 是")
         print()
 
         parking_data = collector.batch_load_data()
@@ -75,8 +79,8 @@ def main():
 
         validator = RuleValidator(config)
         anomalies_df = validator.validate_all(
-            filtered_data, 
-            stat_month.year, 
+            filtered_data,
+            stat_month.year,
             stat_month.month
         )
         print()
@@ -88,7 +92,7 @@ def main():
 
         utilization_analyzer = ParkingUtilization(config)
         utilization_df = utilization_analyzer.get_combined_analysis(filtered_data)
-        
+
         data_issues = utilization_analyzer.get_data_issues()
         if not data_issues.empty:
             print("数据质量问题:")
@@ -110,33 +114,52 @@ def main():
         temp_revenue = revenue_summary['临停收入'].sum() if not revenue_summary.empty else 0
         monthly_revenue = revenue_summary['月卡收入'].sum() if not revenue_summary.empty else 0
         total_visits = revenue_summary['总车次'].sum() if not revenue_summary.empty else 0
-        
+
         direct_count = len(revenue_summary[revenue_summary['车场类型'] == '直营']) if not revenue_summary.empty else 0
         entrusted_count = len(revenue_summary[revenue_summary['车场类型'] == '委托']) if not revenue_summary.empty else 0
 
         anomaly_count = len(anomalies_df) if anomalies_df is not None and not anomalies_df.empty else 0
 
         issue_tracker = IssueTracker(config)
-        
+
         if anomalies_df is not None and not anomalies_df.empty:
             anomalies_df = issue_tracker.enrich_current_issues(anomalies_df, stat_month)
-        
+
+        if args.export_feedback_template:
+            print("导出处理反馈模板...")
+            template_path = issue_tracker.export_feedback_template(anomalies_df, stat_month)
+            if template_path:
+                print(f"  ✓ 模板已导出: {template_path}")
+                print()
+            if anomaly_count == 0:
+                print("  ⚠ 本月无异常，未生成模板")
+                print()
+
         feedback_errors = pd.DataFrame()
-        if args.feedback or os.path.exists('./data/feedback'):
+        feedback_pending = pd.DataFrame()
+        matched_feedback = pd.DataFrame()
+
+        if args.feedback or (os.path.exists('./data/feedback') and not args.export_feedback_template):
             print("加载处理反馈文件...")
             current_for_match = anomalies_df if anomalies_df is not None and not anomalies_df.empty else None
-            matched_feedback, unmatched_feedback = issue_tracker.load_feedback_file(args.feedback, current_for_match)
-            
+            matched_feedback, pending_feedback, unmatched_feedback = issue_tracker.load_feedback_file(
+                args.feedback, current_for_match
+            )
+
             if not unmatched_feedback.empty:
-                unmatched_feedback['错误原因'] = '问题ID不存在或不匹配'
+                unmatched_feedback['错误原因'] = '问题ID不存在或无法匹配'
                 feedback_errors = unmatched_feedback
                 print(f"  ⚠ 发现 {len(feedback_errors)} 条反馈无法匹配，已记录到反馈异常工作表")
-            
+
+            if not pending_feedback.empty:
+                feedback_pending = pending_feedback
+
             if not matched_feedback.empty:
                 print(f"  ✓ 成功匹配 {len(matched_feedback)} 条处理反馈")
+                issue_tracker.update_history_from_feedback(matched_feedback, stat_month)
                 anomalies_df = issue_tracker.merge_feedback_to_current(anomalies_df, matched_feedback)
             print()
-        
+
         if anomalies_df is not None and not anomalies_df.empty:
             issue_tracker.update_issue_history(anomalies_df, stat_month)
 
@@ -144,8 +167,12 @@ def main():
             print("✅ 本月无待处理异常")
             print()
 
-        closed_loop_summary = issue_tracker.get_closed_loop_summary(anomalies_df, stat_month)
-        
+        closed_loop_summary = issue_tracker.get_closed_loop_summary(
+            anomalies_df, stat_month, matched_feedback
+        )
+
+        lifecycle_df = issue_tracker.get_lifecycle_sheet()
+
         results = {
             'parking_count': len(filtered_data),
             'direct_count': direct_count,
@@ -156,53 +183,78 @@ def main():
             'total_visits': total_visits,
             'anomaly_count': anomaly_count,
             'revenue_summary': revenue_summary,
-            'type_comparison': type_compare,
+            'type_comparison': type_comparison,
             'utilization': utilization_df,
             'member_summary': member_summary,
             'ranking': ranking_df,
             'anomalies': anomalies_df if anomalies_df is not None else pd.DataFrame(),
             'closed_loop_summary': closed_loop_summary,
+            'lifecycle': lifecycle_df,
+            'feedback_pending': feedback_pending,
             'feedback_errors': feedback_errors
         }
 
         send_records_df = None
         preview_records_df = None
         notification_review_df = None
-        
-        if not args.review_only and args.send_mode != 'none':
+
+        if not args.review_only and args.send_mode != 'none' and not args.export_feedback_template:
             sender = NotificationSender(config)
-            
+
             report_gen = ReportGenerator(config)
             todo_list, manager_todos = report_gen.generate_issue_list(anomalies_df)
-            
+
             if anomalies_df is not None and not anomalies_df.empty:
                 if '统计月份' not in anomalies_df.columns:
                     anomalies_df = anomalies_df.copy()
                     anomalies_df['统计月份'] = stat_month.strftime('%Y-%m')
-            
+
             if args.send_mode == 'preview':
                 preview_records_df, notification_review_df = sender.send_notifications(
-                    manager_todos, anomalies_df, stat_month, 
+                    manager_todos, anomalies_df, stat_month,
                     send_mode='preview', target_managers=args.managers
                 )
                 results['preview_records'] = preview_records_df
                 results['notification_review'] = notification_review_df
                 sender.save_send_records(stat_month)
+
+                if not preview_records_df.empty:
+                    all_issue_ids = []
+                    for _, row in preview_records_df.iterrows():
+                        content = str(row.get('消息内容', ''))
+                        import re
+                        ids = re.findall(r'问题ID: ([A-Z0-9]+)', content)
+                        all_issue_ids.extend(ids)
+                    if all_issue_ids:
+                        issue_tracker.add_notification_event(
+                            list(set(all_issue_ids)), sender.batch_id, stat_month
+                        )
             else:
                 send_records_df, notification_review_df = sender.send_notifications(
-                    manager_todos, anomalies_df, stat_month, 
+                    manager_todos, anomalies_df, stat_month,
                     send_mode=args.send_mode, target_managers=args.managers
                 )
                 results['send_records'] = send_records_df if send_records_df is not None else pd.DataFrame()
                 results['notification_review'] = notification_review_df
                 sender.save_send_records(stat_month)
+
+                if send_records_df is not None and not send_records_df.empty:
+                    all_issue_ids = []
+                    for _, row in send_records_df.iterrows():
+                        if '问题ID列表' in row and pd.notna(row['问题ID列表']):
+                            ids = str(row['问题ID列表']).split(',')
+                            all_issue_ids.extend([i.strip() for i in ids])
+                    if all_issue_ids:
+                        issue_tracker.add_notification_event(
+                            list(set(all_issue_ids)), sender.batch_id, stat_month
+                        )
         else:
             if anomalies_df is not None and not anomalies_df.empty:
                 anomalies_df_copy = anomalies_df.copy()
                 anomalies_df_copy['统计月份'] = stat_month.strftime('%Y-%m')
             else:
                 anomalies_df_copy = pd.DataFrame()
-            
+
             sender = NotificationSender(config)
             notification_review_df = sender._generate_review_summary(
                 anomalies_df_copy, pd.DataFrame(), args.managers, stat_month
@@ -227,10 +279,12 @@ def main():
         print(f"  - 总收入: ¥{total_revenue:,.2f}")
         print(f"  - 总车次: {total_visits:,}")
         print(f"  - 发现异常: {anomaly_count} 项")
-        
+
         if not feedback_errors.empty:
             print(f"  - 反馈异常: {len(feedback_errors)} 条")
-        
+        if not feedback_pending.empty:
+            print(f"  - 反馈待确认: {len(feedback_pending)} 条")
+
         print()
 
         if anomalies_df is not None and not anomalies_df.empty:
@@ -250,24 +304,30 @@ def main():
                 send_summary = send_records_df.groupby('发送状态').size().reset_index(name='数量')
                 print(send_summary.to_string(index=False))
             print()
-        
+
         if preview_records_df is not None and not preview_records_df.empty:
             print(f"预览记录: 共 {len(preview_records_df)} 位负责人的消息已生成并保存到报告")
             print()
 
         print("闭环复盘摘要:")
-        print(closed_loop_summary[['负责人', '本月新增问题数', '历史未关闭数', 
-                                    '本月已关闭数', '复发问题数', '本月闭环率(%)']].to_string(index=False))
+        show_cols = ['负责人', '本月新增问题数', '历史未关闭数',
+                     '本月已关闭数', '复发问题数', '超期未处理数', '即将超期数', '本月闭环率(%)']
+        available_cols = [c for c in show_cols if c in closed_loop_summary.columns]
+        print(closed_loop_summary[available_cols].to_string(index=False))
         print()
 
         print("报告包含以下工作表:")
-        sheets = ['概览', '收入汇总', '车场排名', '直营vs委托', 
-                  '车位利用', '会员分析', '异常清单', '待办事项', 
+        sheets = ['概览', '收入汇总', '车场排名', '直营vs委托',
+                  '车位利用', '会员分析', '异常清单', '待办事项',
                   '负责人待办', '通知复盘', '闭环复盘']
+        if not lifecycle_df.empty:
+            sheets.append('问题生命周期')
         if send_records_df is not None and not send_records_df.empty:
             sheets.append('发送记录')
         if preview_records_df is not None and not preview_records_df.empty:
             sheets.append('消息预览')
+        if not feedback_pending.empty:
+            sheets.append('反馈待确认')
         if not feedback_errors.empty:
             sheets.append('反馈异常')
         for sheet in sheets:

@@ -129,9 +129,23 @@ class ReportGenerator:
     def _get_empty_closed_loop_df(self):
         return pd.DataFrame(columns=[
             '负责人', '本月新增问题数', '历史未关闭数', '本月已关闭数',
-            '超期未处理数', '复发问题数', '问题总数', '本月闭环率(%)'
+            '复发问题数', '超期未处理数', '即将超期数',
+            '平均处理天数', '最长未处理天数',
+            '问题总数', '本月闭环率(%)'
         ])
-    
+
+    def _get_empty_lifecycle_df(self):
+        return pd.DataFrame(columns=[
+            '问题ID', '事件类型', '事件时间', '事件描述',
+            '操作人', '关联批次', '车场名称', '异常类型'
+        ])
+
+    def _get_empty_feedback_pending_df(self):
+        return pd.DataFrame(columns=[
+            '候选问题数', '候选问题ID', '处理状态', '处理人',
+            '处理时间', '备注', '车场名称', '负责人', '异常类型'
+        ])
+
     def _get_empty_feedback_error_df(self):
         return pd.DataFrame(columns=[
             '问题ID', '处理状态', '处理人', '处理时间', '备注', '错误原因'
@@ -220,14 +234,22 @@ class ReportGenerator:
             
             closed_loop_df = results.get('closed_loop_summary', self._get_empty_closed_loop_df())
             closed_loop_df.to_excel(writer, sheet_name='闭环复盘', index=False)
-            
+
+            lifecycle_df = results.get('lifecycle', self._get_empty_lifecycle_df())
+            if not lifecycle_df.empty:
+                lifecycle_df.to_excel(writer, sheet_name='问题生命周期', index=False)
+
+            feedback_pending_df = results.get('feedback_pending', self._get_empty_feedback_pending_df())
+            if not feedback_pending_df.empty:
+                feedback_pending_df.to_excel(writer, sheet_name='反馈待确认', index=False)
+
             feedback_error_df = results.get('feedback_errors', self._get_empty_feedback_error_df())
             if not feedback_error_df.empty:
                 feedback_error_df.to_excel(writer, sheet_name='反馈异常', index=False)
-            
+
             if 'send_records' in results and not results['send_records'].empty:
                 results['send_records'].to_excel(writer, sheet_name='发送记录', index=False)
-            
+
             if 'preview_records' in results and not results['preview_records'].empty:
                 results['preview_records'].to_excel(writer, sheet_name='消息预览', index=False)
 
